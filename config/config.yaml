@@ -1,0 +1,73 @@
+# 美妆内容标签抽取系统配置文件
+
+# 模型配置
+model:
+  provider: "dashscope"  # dashscope | openai_compatible
+  model_name: "qwen-plus"  # 实际型号
+  api_key_env: "DASHSCOPE_API_KEY"
+  base_url: null  # openai兼容时填写
+  temperature: 0.2
+  top_p: 0.9
+  max_output_tokens: 1024
+  parallel_requests: 8
+  rate_limit_qps: 2
+  retry_attempts: 3
+  retry_delay: 1.0
+
+# 处理流水线配置
+pipeline:
+  batch_size: 16
+  max_chars_per_segment: 1500
+  accept_threshold: 0.75  # 直接接受的置信度阈值
+  review_threshold: 0.4   # 需要审核的置信度阈值
+  source_priority: ["title", "body", "asr", "ocr"]  # 来源优先级
+  export_format: "jsonl"  # jsonl | csv | parquet
+  enable_quality_check: true
+  enable_compliance_check: true
+
+# 字段映射配置
+fields_mapping:
+  content_id: "唯一ID"
+  title: "标题"
+  body: "内容"
+  ocr_text: "视频文字识别"
+  asr_text: "视频语音识别"
+
+# 规则引擎配置
+rules:
+  enable_regex_rules: true
+  enable_dictionary_rules: true
+  rule_confidence_base: 0.85  # 规则匹配的基础置信度
+  fuzzy_match_threshold: 0.8  # 模糊匹配阈值
+
+# 融合配置
+fusion:
+  confidence_fusion_method: "weighted_max"  # weighted_max | average | max
+  source_weights:
+    body: 1.0
+    title: 0.8
+    asr: 0.6
+    ocr: 0.5
+  conflict_resolution: "evidence_based"  # evidence_based | confidence_based
+
+# 归一化配置
+normalization:
+  enable_brand_normalization: true
+  enable_ingredient_normalization: true
+  brand_fuzzy_threshold: 0.85
+  ingredient_fuzzy_threshold: 0.9
+
+# 日志配置
+logging:
+  level: "INFO"
+  format: "{time:YYYY-MM-DD HH:mm:ss} | {level} | {name}:{function}:{line} - {message}"
+  rotation: "10 MB"
+  retention: "7 days"
+
+# 输出配置
+output:
+  include_evidence: true
+  max_evidence_length: 50
+  include_source: true
+  include_confidence: true
+  sort_by_confidence: true
