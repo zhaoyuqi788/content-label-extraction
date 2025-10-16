@@ -8,6 +8,8 @@ import json
 import time
 from typing import Dict, Any, Optional, List
 from abc import ABC, abstractmethod
+from pathlib import Path
+from datetime import datetime
 
 import httpx
 from tenacity import retry, stop_after_attempt, wait_exponential
@@ -82,21 +84,18 @@ class DashScopeClient(BaseLLMClient):
         
         payload = {
             "model": self.model_name,
-            "input": {
-                "messages": messages
-            },
-            "parameters": {
-                "temperature": self.temperature,
-                "top_p": self.top_p,
-                "max_tokens": self.max_tokens,
-                "result_format": "message"
-            }
+            "messages": messages,
+            "temperature": self.temperature,
+            "top_p": self.top_p,
+            "max_tokens": self.max_tokens
         }
+        
+        url = f"{self.base_url}/chat/completions"
         
         async with httpx.AsyncClient(timeout=60.0) as client:
             try:
                 response = await client.post(
-                    self.base_url,
+                    url,
                     headers=headers,
                     json=payload
                 )
@@ -222,6 +221,24 @@ class LLMClientManager:
             processing_time = time.time() - start_time
             tokens_used = self.client.get_token_usage(response)
             
+            # 保存LLM响应结果到temp_outputs
+            self._save_llm_response(request.content_id, {
+                "request": {
+                    "content_id": request.content_id,
+                    "text": request.text[:500] + "..." if len(request.text) > 500 else request.text,  # 截断长文本
+                    "timestamp": datetime.now().isoformat()
+                },
+                "response": {
+                    "raw_content": content,
+                    "parsed_labels": labels.model_dump(),
+                    "tokens_used": tokens_used,
+                    "processing_time": processing_time,
+                    "model_name": self.client.model_name
+                }
+            })
+    
+
+            
             return LLMExtractionResponse(
                 content_id=request.content_id,
                 extracted_labels=labels,
@@ -233,6 +250,32 @@ class LLMClientManager:
         except Exception as e:
             logger.error(f"标签提取失败 content_id={request.content_id}: {e}")
             raise
+    
+    def _save_llm_response(self, content_id: str, data: Dict[str, Any]) -> None:
+        """保存LLM响应结果到temp_outputs目录
+        
+        Args:
+            content_id: 内容ID
+            data: 要保存的数据
+        """
+        try:
+            # 创建temp_outputs目录
+            temp_dir = Path("temp_outputs")
+            temp_dir.mkdir(exist_ok=True)
+            
+            # 生成文件名（使用时间戳避免冲突）
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = f"llm_response_{content_id}_{timestamp}.json"
+            filepath = temp_dir / filename
+            
+            # 保存数据
+            with open(filepath, 'w', encoding='utf-8') as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+            
+            logger.info(f"LLM响应已保存到: {filepath}")
+            
+        except Exception as e:
+            logger.warning(f"保存LLM响应失败: {e}")
     
     def _get_system_prompt(self) -> str:
         """获取系统提示"""
@@ -249,10 +292,10 @@ class LLMClientManager:
         Returns:
             str: 内容文本
         """
-        if 'output' in response:  # DashScope格式
-            return response['output']['text']
-        elif 'choices' in response:  # OpenAI格式
+        if 'choices' in response:  # OpenAI兼容格式（包括DashScope兼容模式）
             return response['choices'][0]['message']['content']
+        elif 'output' in response:  # 旧版DashScope格式
+            return response['output']['text']
         else:
             raise ValueError("无法解析API响应格式")
     
@@ -267,8 +310,45 @@ class LLMClientManager:
             ContentLabels: 解析后的标签
         """
         try:
+            # 提取JSON内容（处理```json代码块格式）
+            json_content = content.strip()
+            if json_content.startswith('```json'):
+                # 提取```json和```之间的内容
+                start_idx = json_content.find('```json') + 7
+                end_idx = json_content.rfind('```')
+                if end_idx > start_idx:
+                    json_content = json_content[start_idx:end_idx].strip()
+                else:
+                    # 如果没有结束的```，取从```json之后的所有内容
+                    json_content = json_content[start_idx:].strip()
+            elif json_content.startswith('```'):
+                # 处理普通```代码块
+                start_idx = json_content.find('```') + 3
+                end_idx = json_content.rfind('```')
+                if end_idx > start_idx:
+                    json_content = json_content[start_idx:end_idx].strip()
+                else:
+                    # 如果没有结束的```，取从```之后的所有内容
+                    json_content = json_content[start_idx:].strip()
+            
+            # 如果JSON不完整，尝试修复
+            if json_content and not json_content.endswith('}'):
+                # 尝试找到最后一个完整的对象或数组
+                brace_count = 0
+                last_complete_pos = -1
+                for i, char in enumerate(json_content):
+                    if char == '{':
+                        brace_count += 1
+                    elif char == '}':
+                        brace_count -= 1
+                        if brace_count == 0:
+                            last_complete_pos = i + 1
+                
+                if last_complete_pos > 0:
+                    json_content = json_content[:last_complete_pos]
+            
             # 尝试解析JSON
-            data = json.loads(content)
+            data = json.loads(json_content)
             
             # 验证并创建ContentLabels对象
             labels = ContentLabels(
@@ -280,7 +360,7 @@ class LLMClientManager:
             
         except json.JSONDecodeError as e:
             logger.error(f"JSON解析失败 content_id={content_id}: {e}")
-            logger.error(f"原始内容: {content}")
+            logger.error(f"原始内容: {content[:500]}...")  # 只显示前500字符
             
             # 返回空标签
             return ContentLabels(content_id=content_id)

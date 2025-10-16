@@ -8,7 +8,7 @@ model:
   base_url: null  # openai兼容时填写
   temperature: 0.2
   top_p: 0.9
-  max_output_tokens: 1024
+  max_output_tokens: 4096
   parallel_requests: 8
   rate_limit_qps: 2
   retry_attempts: 3
