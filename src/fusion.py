@@ -15,7 +15,7 @@ from copy import deepcopy
 
 from .schemas import (
     LabelItem, Evidence, ContentOutput, SourceType,
-    ExtractionResult, FusionConfig
+    ExtractionResult, FusionConfig, ContentLabels, BrandItem, ContentInput
 )
 from .utils import load_config
 
@@ -231,8 +231,8 @@ class LabelFuser:
         # 按类别分组标签
         grouped_labels = self._group_labels_by_category(all_results)
         
-        # 融合每个类别的标签
-        fused_output = ContentOutput(
+        # 创建融合后的ContentLabels
+        fused_labels = ContentLabels(
             content_id=all_results[0].content_id,
             talking_angles=self._fuse_category_labels(
                 grouped_labels.get("talking_angles", []), "talking_angles"
@@ -255,8 +255,8 @@ class LabelFuser:
             benefits=self._fuse_category_labels(
                 grouped_labels.get("benefits", []), "benefits"
             ),
-            brands=self._fuse_category_labels(
-                grouped_labels.get("brands", []), "brands"
+            brands=self._fuse_brand_labels(
+                grouped_labels.get("brands", [])
             ),
             compliance_flags=self._fuse_category_labels(
                 grouped_labels.get("compliance_flags", []), "compliance_flags"
@@ -270,7 +270,28 @@ class LabelFuser:
         stance_labels = grouped_labels.get("stance", [])
         if stance_labels:
             fused_stance = self._fuse_category_labels(stance_labels, "stance")
-            fused_output.stance = fused_stance[0] if fused_stance else None
+            fused_labels.stance = fused_stance[0] if fused_stance else None
+        
+        # 创建ContentOutput对象
+        # 创建一个基本的ContentInput对象作为original_content
+        original_content = ContentInput(
+            content_id=all_results[0].content_id,
+            title="",  # 实际应用中应该从原始数据获取
+            body="",
+            ocr_text="",
+            asr_text=""
+        )
+        
+        fused_output = ContentOutput(
+            content_id=all_results[0].content_id,
+            original_content=original_content,
+            labels=fused_labels,
+            processing_metadata={
+                "fusion_method": "weighted_voting",
+                "num_sources": len(all_results),
+                "fusion_timestamp": "2024-01-01T00:00:00Z"  # 临时时间戳
+            }
+        )
             
         return fused_output
         
@@ -282,18 +303,20 @@ class LabelFuser:
         grouped = defaultdict(list)
         
         for result in results:
+            # 从result.labels中获取标签
+            labels_obj = result.labels
             for attr_name in [
                 "talking_angles", "scenarios", "skin_types", "skin_concerns",
                 "product_categories", "ingredients", "benefits", "brands",
                 "compliance_flags", "quality_flags"
             ]:
-                labels = getattr(result, attr_name, [])
+                labels = getattr(labels_obj, attr_name, [])
                 if labels:
                     grouped[attr_name].extend(labels)
                     
             # 处理stance
-            if result.stance:
-                grouped["stance"].append(result.stance)
+            if hasattr(labels_obj, 'stance') and labels_obj.stance:
+                grouped["stance"].append(labels_obj.stance)
                 
         return grouped
         
@@ -325,6 +348,37 @@ class LabelFuser:
         
         # 按置信度排序
         return sorted(resolved_labels, key=lambda x: x.confidence, reverse=True)
+    
+    def _fuse_brand_labels(self, labels: List[LabelItem]) -> List[BrandItem]:
+        """融合品牌标签，转换为BrandItem格式"""
+        if not labels:
+            return []
+            
+        # 按标签名分组
+        label_groups = defaultdict(list)
+        for label in labels:
+            label_groups[label.label].append(label)
+            
+        # 融合同名标签并转换为BrandItem
+        fused_brands = []
+        for label_name, label_list in label_groups.items():
+            fused_label = self._fuse_same_labels(label_list)
+            if fused_label.confidence >= self.review_threshold:
+                # 从extra_data中获取品牌信息，如果没有则使用默认值
+                extra_data = getattr(fused_label, 'extra_data', {}) or {}
+                raw_name = extra_data.get('raw', fused_label.label)
+                norm_id = extra_data.get('norm_id')
+                
+                brand_item = BrandItem(
+                    raw=raw_name,
+                    norm_id=norm_id,
+                    confidence=fused_label.confidence,
+                    evidence=fused_label.evidence
+                )
+                fused_brands.append(brand_item)
+                
+        # 按置信度排序
+        return sorted(fused_brands, key=lambda x: x.confidence, reverse=True)
         
     def _fuse_same_labels(self, labels: List[LabelItem]) -> LabelItem:
         """融合相同标签"""
@@ -399,7 +453,7 @@ class FusionPipeline:
             if llm_results:
                 notes.append(f"LLM抽取: {len(llm_results)}条")
                 
-            output.notes = "; ".join(notes) if notes else "无抽取结果"
+            output.labels.notes = "; ".join(notes) if notes else "无抽取结果"
             
             logger.info(f"融合完成，输出标签总数: {self._count_total_labels(output)}")
             return output
@@ -431,10 +485,10 @@ class FusionPipeline:
             "product_categories", "ingredients", "benefits", "brands",
             "compliance_flags", "quality_flags"
         ]:
-            labels = getattr(output, attr_name, [])
+            labels = getattr(output.labels, attr_name, [])
             count += len(labels) if labels else 0
             
-        if output.stance:
+        if output.labels.stance:
             count += 1
             
         return count
@@ -448,12 +502,12 @@ class FusionPipeline:
             "product_categories", "ingredients", "benefits", "brands",
             "compliance_flags", "quality_flags"
         ]:
-            labels = getattr(output, attr_name, [])
+            labels = getattr(output.labels, attr_name, [])
             if labels:
                 all_labels.extend(labels)
                 
-        if output.stance:
-            all_labels.append(output.stance)
+        if output.labels.stance:
+            all_labels.append(output.labels.stance)
             
         return all_labels
         

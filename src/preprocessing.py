@@ -43,7 +43,17 @@ class TextPreprocessor:
         
         # 表情符号（保留常见的推荐表情）
         self.emoji_keep_pattern = re.compile(r'[👍👎💕❤️😍🥰😊😭😂🔥💯✨]')
-        self.emoji_remove_pattern = re.compile(r'[\U0001F600-\U0001F64F\U0001F300-\U0001F5FF\U0001F680-\U0001F6FF\U0001F1E0-\U0001F1FF\U00002702-\U000027B0\U000024C2-\U0001F251]+')
+        # 修复表情符号移除正则，避免误删中文字符
+        self.emoji_remove_pattern = re.compile(
+            r'[\U0001F600-\U0001F64F]|'  # 表情符号
+            r'[\U0001F300-\U0001F5FF]|'  # 杂项符号和象形文字
+            r'[\U0001F680-\U0001F6FF]|'  # 交通和地图符号
+            r'[\U0001F1E0-\U0001F1FF]|'  # 区域指示符号
+            r'[\U00002702-\U000027B0]|'  # 杂项符号
+            r'[\U000024C2-\U000024FF]|'  # 封闭字母数字（修正范围）
+            r'[\U0001F100-\U0001F1FF]|'  # 封闭字母数字补充
+            r'[\U0001F200-\U0001F2FF]'   # 封闭CJK字母和月份
+        )
         
         # URL链接
         self.url_pattern = re.compile(r'https?://[^\s]+|www\.[^\s]+')
@@ -143,10 +153,6 @@ class TextPreprocessor:
         text = self.whitespace_pattern.sub(' ', text)
         text = text.strip()
         
-        # 9. 繁体转简体（如果需要）
-        if self.config.get('preprocessing', {}).get('convert_traditional', False):
-            text = self._convert_traditional_to_simplified(text)
-        
         return text
     
     def _process_emojis(self, text: str) -> str:
@@ -213,38 +219,7 @@ class TextPreprocessor:
         text = self.repeat_punct_pattern.sub(r'\1', text)
         
         # 标准化引号
-        text = re.sub(r'[""]', '"', text)
-        text = re.sub(r'[''']', "'", text)
-        
-        return text
-    
-    def _convert_traditional_to_simplified(self, text: str) -> str:
-        """繁体转简体（简单实现）
-        
-        Args:
-            text: 输入文本
-            
-        Returns:
-            str: 转换后的文本
-        """
-        # 这里可以集成更完整的繁简转换库，如 opencc
-        # 目前提供基础的字符映射
-        traditional_map = {
-            '護': '护', '膚': '肤', '產': '产', '品': '品',
-            '質': '质', '量': '量', '價': '价', '格': '格',
-            '購': '购', '買': '买', '評': '评', '價': '价',
-            '優': '优', '點': '点', '缺': '缺', '點': '点',
-            '適': '适', '合': '合', '敏': '敏', '感': '感',
-            '乾': '干', '燥': '燥', '油': '油', '性': '性',
-            '混': '混', '合': '合', '性': '性', '肌': '肌',
-            '膚': '肤', '質': '质', '問': '问', '題': '题',
-            '效': '效', '果': '果', '成': '成', '分': '分',
-            '濃': '浓', '度': '度', '質': '质', '地': '地',
-            '顏': '颜', '色': '色', '味': '味', '道': '道'
-        }
-        
-        for trad, simp in traditional_map.items():
-            text = text.replace(trad, simp)
+        text = re.sub(r'[""'']', '"', text)
         
         return text
     
@@ -253,112 +228,131 @@ class TextPreprocessor:
         
         Args:
             content: 预处理后的内容
-            
-        Raises:
-            ValueError: 如果内容无效
         """
-        # 检查是否有有效文本
-        combined_text = content.get_combined_text()
-        if not combined_text.strip():
-            raise ValueError(f"预处理后没有有效文本内容: {content.content_id}")
+        # 检查是否有有效内容
+        has_content = any([
+            content.title and content.title.strip(),
+            content.body and content.body.strip(),
+            content.ocr_text and content.ocr_text.strip(),
+            content.asr_text and content.asr_text.strip()
+        ])
         
-        # 检查文本长度
-        if len(combined_text) < 10:
-            logger.warning(f"预处理后文本过短: {content.content_id}, 长度: {len(combined_text)}")
-        
-        # 检查字符编码
-        try:
-            combined_text.encode('utf-8')
-        except UnicodeEncodeError as e:
-            raise ValueError(f"文本编码错误: {content.content_id}, {e}")
+        if not has_content:
+            logger.warning(f"预处理后内容为空: {content.content_id}")
     
-    def get_source_priority_mapping(self) -> Dict[str, int]:
-        """获取来源优先级映射
+    def get_primary_text(self, content: ContentInput) -> Tuple[str, SourceType]:
+        """获取主要文本内容
         
+        Args:
+            content: 内容对象
+            
         Returns:
-            Dict[str, int]: 来源到优先级的映射
+            Tuple[str, SourceType]: (主要文本, 来源类型)
         """
-        return {source: i for i, source in enumerate(self.source_priority)}
+        # 按优先级选择主要文本
+        for source in self.source_priority:
+            if source == 'title' and content.title:
+                return content.title, SourceType.TITLE
+            elif source == 'body' and content.body:
+                return content.body, SourceType.BODY
+            elif source == 'asr' and content.asr_text:
+                return content.asr_text, SourceType.ASR
+            elif source == 'ocr' and content.ocr_text:
+                return content.ocr_text, SourceType.OCR
+        
+        # 如果都没有，返回空字符串
+        return "", SourceType.BODY
+    
+    def segment_text(self, text: str, max_chars: Optional[int] = None) -> List[str]:
+        """分段文本
+        
+        Args:
+            text: 输入文本
+            max_chars: 最大字符数
+            
+        Returns:
+            List[str]: 分段后的文本列表
+        """
+        if not text:
+            return []
+        
+        max_chars = max_chars or self.max_chars_per_segment
+        
+        # 如果文本长度小于限制，直接返回
+        if len(text) <= max_chars:
+            return [text]
+        
+        segments = []
+        current_pos = 0
+        
+        while current_pos < len(text):
+            # 计算当前段的结束位置
+            end_pos = current_pos + max_chars
+            
+            if end_pos >= len(text):
+                # 最后一段
+                segments.append(text[current_pos:])
+                break
+            
+            # 寻找合适的分割点（句号、感叹号、问号）
+            segment_text = text[current_pos:end_pos]
+            
+            # 从后往前找标点符号
+            split_pos = -1
+            for i in range(len(segment_text) - 1, -1, -1):
+                if segment_text[i] in '。！？':
+                    split_pos = i + 1
+                    break
+            
+            if split_pos > 0 and split_pos > len(segment_text) * 0.5:
+                # 找到合适的分割点
+                segments.append(text[current_pos:current_pos + split_pos])
+                current_pos += split_pos
+            else:
+                # 没找到合适的分割点，强制分割
+                segments.append(text[current_pos:end_pos])
+                current_pos = end_pos
+        
+        return segments
 
 
 class PreprocessingPipeline:
     """预处理流水线"""
     
-    def __init__(self, config: Optional[Dict] = None):
-        """初始化预处理流水线
+    def __init__(self, config_path: Optional[str] = None):
+        self.config = load_config(config_path) if config_path else {}
+        self.preprocessor = TextPreprocessor(self.config)
         
-        Args:
-            config: 配置字典
-        """
-        self.config = config or load_config()
-        
-        # 初始化组件
-        self.text_preprocessor = TextPreprocessor(self.config)
-        
-        logger.info("预处理流水线初始化完成")
-    
     def process(self, contents: List[ContentInput]) -> List[ContentInput]:
-        """处理内容列表
-        
-        Args:
-            contents: 输入内容列表
-            
-        Returns:
-            List[ContentInput]: 预处理后的内容列表
-        """
-        logger.info(f"开始预处理 {len(contents)} 个内容")
+        """处理预处理"""
+        logger.info(f"开始批量预处理，共 {len(contents)} 条内容")
         
         processed_contents = []
         
         for content in contents:
             try:
-                # 文本预处理
-                preprocessed_content = self.text_preprocessor.preprocess_content(content)
-                processed_contents.append(preprocessed_content)
+                processed_content = self.preprocessor.preprocess_content(content)
+                processed_contents.append(processed_content)
                 
             except Exception as e:
                 logger.error(f"预处理失败 {content.content_id}: {e}")
-                # 可以选择跳过或使用原始内容
-                continue
-        
-        logger.info(f"预处理完成: {len(contents)} -> {len(processed_contents)} 个内容")
+                # 保留原始内容
+                processed_contents.append(content)
+                
+        logger.info(f"批量预处理完成，成功处理 {len(processed_contents)} 条")
         return processed_contents
-    
-    def process_single(self, content: ContentInput) -> ContentInput:
-        """处理单个内容
-        
-        Args:
-            content: 输入内容
-            
-        Returns:
-            ContentInput: 预处理后的内容
-        """
-        return self.text_preprocessor.preprocess_content(content)
 
 
+# 便捷函数
 def create_preprocessing_pipeline(config_path: Optional[str] = None) -> PreprocessingPipeline:
-    """便捷函数：创建预处理流水线
-    
-    Args:
-        config_path: 配置文件路径
-        
-    Returns:
-        PreprocessingPipeline: 预处理流水线实例
-    """
-    config = load_config(config_path) if config_path else None
-    return PreprocessingPipeline(config)
+    """创建预处理流水线"""
+    return PreprocessingPipeline(config_path)
 
 
-def preprocess_contents(contents: List[ContentInput], 
-                       config_path: Optional[str] = None) -> List[ContentInput]:
-    """便捷函数：预处理内容列表
-    
-    Args:
-        contents: 内容列表
-        config_path: 配置文件路径
-        
-    Returns:
-        List[ContentInput]: 预处理后的内容列表
-    """
+def preprocess_contents(
+    contents: List[ContentInput],
+    config_path: Optional[str] = None
+) -> List[ContentInput]:
+    """预处理内容列表"""
     pipeline = create_preprocessing_pipeline(config_path)
-    return pipeline.process(contents);
+    return pipeline.process(contents)

@@ -92,8 +92,13 @@ def setup_logging(config: Dict[str, Any]) -> None:
     log_dir = Path("logs")
     log_dir.mkdir(exist_ok=True)
     
+    # 生成带时间戳的日志文件名
+    from datetime import datetime
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    log_filename = f"content_labeling_{timestamp}.log"
+    
     logger.add(
-        log_dir / "content_labeling.log",
+        log_dir / log_filename,
         level=log_config.get('level', 'INFO'),
         format=log_config.get('format', '{time:YYYY-MM-DD HH:mm:ss} | {level} | {name}:{function}:{line} - {message}'),
         rotation=log_config.get('rotation', '10 MB'),

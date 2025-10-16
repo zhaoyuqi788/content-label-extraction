@@ -465,7 +465,7 @@ class RuleEngine:
         
         # 获取配置目录
         if config_path:
-            config_dir = Path(config_path).parent / 'config'
+            config_dir = Path(config_path).parent
         else:
             config_dir = Path('config')
         

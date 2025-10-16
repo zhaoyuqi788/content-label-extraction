@@ -267,10 +267,21 @@ class DataIngestion:
             List[ContentInput]: 加载的内容列表
         """
         try:
-            # 步骤1: 扫描并合并Excel文件生成parquet
-            parquet_path = self.scan_and_merge_excel_files(data_raw_dir, data_dir)
+            # 检查data文件夹中是否已有parquet文件
+            data_path = Path(data_dir)
+            existing_parquet_files = list(data_path.glob("*.parquet")) if data_path.exists() else []
             
-            # 步骤2: 从parquet文件读取数据到内存
+            if existing_parquet_files:
+                # 如果有现有的parquet文件，选择最新的一个
+                latest_parquet = max(existing_parquet_files, key=lambda x: x.stat().st_mtime)
+                logger.info(f"发现已存在的parquet文件: {latest_parquet.name}，直接读取")
+                parquet_path = str(latest_parquet)
+            else:
+                # 如果没有现有文件，则扫描并合并Excel文件生成parquet
+                logger.info(f"data文件夹中未发现parquet文件，开始从{data_raw_dir}合并Excel文件")
+                parquet_path = self.scan_and_merge_excel_files(data_raw_dir, data_dir)
+            
+            # 从parquet文件读取数据到内存
             df = self.read_parquet(parquet_path)
             
             # 步骤3: 字段映射

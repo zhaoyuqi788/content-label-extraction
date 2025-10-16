@@ -170,3 +170,32 @@ class LLMExtractionResponse(BaseModel):
     tokens_used: int = Field(default=0, description="使用的token数量")
     processing_time: float = Field(default=0.0, description="处理时间")
     model_name: str = Field(..., description="使用的模型名称")
+
+
+class ExtractionResult(BaseModel):
+    """抽取结果模型"""
+    content_id: str = Field(..., description="内容ID")
+    labels: ContentLabels = Field(..., description="提取的标签")
+    method: str = Field(..., description="抽取方法")
+    confidence: float = Field(..., ge=0.0, le=1.0, description="整体置信度")
+    processing_time: float = Field(default=0.0, description="处理时间")
+    tokens_used: int = Field(default=0, description="使用的token数量")
+
+
+class ContentOutput(BaseModel):
+    """内容输出模型"""
+    content_id: str = Field(..., description="内容ID")
+    original_content: ContentInput = Field(..., description="原始内容")
+    labels: ContentLabels = Field(..., description="最终标签")
+    processing_metadata: Dict[str, Any] = Field(default_factory=dict, description="处理元数据")
+    total_processing_time: float = Field(default=0.0, description="总处理时间")
+    total_tokens_used: int = Field(default=0, description="总token使用量")
+
+
+class FusionConfig(BaseModel):
+    """融合配置模型"""
+    confidence_threshold: float = Field(default=0.5, description="置信度阈值")
+    max_labels_per_category: int = Field(default=5, description="每个类别最大标签数")
+    fusion_method: str = Field(default="weighted_max", description="融合方法")
+    conflict_resolution: str = Field(default="priority", description="冲突解决策略")
+    enable_deduplication: bool = Field(default=True, description="是否启用去重")
