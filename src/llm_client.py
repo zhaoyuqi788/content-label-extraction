@@ -225,7 +225,7 @@ class LLMClientManager:
             self._save_llm_response(request.content_id, {
                 "request": {
                     "content_id": request.content_id,
-                    "text": request.text[:500] + "..." if len(request.text) > 500 else request.text,  # 截断长文本
+                    "text": request.text,
                     "timestamp": datetime.now().isoformat()
                 },
                 "response": {
